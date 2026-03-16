@@ -1,22 +1,23 @@
 const express = require("express");
 const router = express.Router();
-
 const {
   createUser,
   getUsers,
   getUserById,
   updateUser,
-  deleteUser
+  deleteUser,
+  loginUser
 } = require("../controllers/userController");
+const { authMiddleware } = require("../middleware/authMiddleware");
 
-router.post("/", createUser);
+/* ---------------- PUBLIC ---------------- */
+router.post("/login", loginUser);
 
-router.get("/", getUsers);
-
-router.get("/:id", getUserById);
-
-router.put("/:id", updateUser);
-
-router.delete("/:id", deleteUser);
+/* ---------------- PROTECTED ---------------- */
+router.post("/", authMiddleware(["ADMIN"]), createUser);
+router.get("/", authMiddleware(), getUsers);
+router.get("/:id", authMiddleware(), getUserById);
+router.put("/:id", authMiddleware(["ADMIN"]), updateUser);
+router.delete("/:id", authMiddleware(["ADMIN"]), deleteUser);
 
 module.exports = router;
