@@ -4,50 +4,36 @@ require("dotenv").config();
 
 const connectDB = require("./config/db");
 const userRoutes = require("./routes/userRoutes");
-const User = require("./models/User");
+const { seedUsers } = require("./seed/seedUsers");
+const { seedRoles } = require("./seed/seedRoles");
 
 const app = express();
 
+// ---------------- MIDDLEWARE ----------------
 app.use(cors());
 app.use(express.json());
 
+// ---------------- ROUTES ----------------
 app.use("/api/users", userRoutes);
 
-app.get("/", (req, res) => {
-  res.send("User API Server Running");
-});
+app.get("/", (req, res) => res.send("User API Server Running"));
 
-/* ---------------- SEED FUNCTION ---------------- */
-
-async function seedUser() {
-  try {
-    const count = await User.countDocuments();
-
-    if (count === 0) {
-      await User.create({
-        name: "Aung Ko Lin",
-        email: "aung@gmail.com",
-        age: 30
-      });
-
-      console.log("Sample user inserted");
-    }
-  } catch (error) {
-    console.error("Seed error:", error);
-  }
-}
-
-/* ---------------- START SERVER ---------------- */
-
+// ---------------- START SERVER ----------------
 const PORT = process.env.PORT || 5000;
 
 async function startServer() {
-  await connectDB();   // connect to MongoDB
-  await seedUser();    // insert sample data
+  try {
+    await connectDB();    // Connect to MongoDB
+    await seedUsers();    // seed default users (optional)
+    await seedRoles();   // seed default roles
 
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error("Server startup failed:", err);
+    process.exit(1); // exit with failure
+  }
 }
 
 startServer();
