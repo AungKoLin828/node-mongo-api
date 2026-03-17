@@ -124,5 +124,70 @@ exports.getLeaderboard = async () => {
   return await User.find()
     .sort({ score: -1 })
     .limit(10)
-    .select("name username score level");
+    .select("name username score level coins");
+};
+
+/* ---------------- TRACK AD VIEW & REWARD ---------------- */
+exports.trackAdView = async (userId) => {
+  const user = await User.findById(userId);
+  if (!user) throw new Error("User not found");
+
+  user.adViews += 1;
+  user.coins += 1; // Reward 1 coin per view
+
+  await user.save();
+  return { adViews: user.adViews, coins: user.coins };
+};
+
+/* ---------------- TRACK AD CLICK & REWARD ---------------- */
+exports.trackAdClick = async (userId) => {
+  const user = await User.findById(userId);
+  if (!user) throw new Error("User not found");
+
+  user.adClicks += 1;
+  user.coins += 5; // Reward 5 coins per click
+
+  await user.save();
+  return { adClicks: user.adClicks, coins: user.coins };
+};
+
+/* ---------------- GET USER AD STATS ---------------- */
+exports.getUserAdStats = async (userId) => {
+  const user = await User.findById(userId);
+  if (!user) throw new Error("User not found");
+
+  return {
+    adViews: user.adViews,
+    adClicks: user.adClicks,
+    coins: user.coins,
+  };
+};
+
+/* ---------------- GET GLOBAL AD STATS ---------------- */
+exports.getGlobalAdStats = async () => {
+  const users = await User.find();
+  const totalViews = users.reduce((sum, u) => sum + u.adViews, 0);
+  const totalClicks = users.reduce((sum, u) => sum + u.adClicks, 0);
+  const totalCoins = users.reduce((sum, u) => sum + u.coins, 0);
+
+  return { totalViews, totalClicks, totalCoins };
+};
+
+/* ---------------- CALCULATE USER AD REVENUE ---------------- */
+exports.calculateAdRevenue = async (userId, cpm = 0.5) => {
+  // cpm = cost per 1000 views in $ (default 0.5$)
+  const user = await User.findById(userId);
+  if (!user) throw new Error("User not found");
+
+  const revenue = (user.adViews / 1000) * cpm;
+  return parseFloat(revenue.toFixed(2));
+};
+
+/* ---------------- CALCULATE GLOBAL REVENUE ---------------- */
+exports.calculateGlobalRevenue = async (cpm = 0.5) => {
+  const users = await User.find();
+  const totalViews = users.reduce((sum, u) => sum + u.adViews, 0);
+  const revenue = (totalViews / 1000) * cpm;
+
+  return parseFloat(revenue.toFixed(2));
 };

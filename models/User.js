@@ -33,6 +33,10 @@ const UserSchema = new mongoose.Schema(
     // ---------------- SECURITY ----------------
     loginAttempts: { type: Number, default: 0 },
     lockUntil: { type: Date },
+
+    // User model additions
+    adViews: { type: Number, default: 0 },
+    adClicks: { type: Number, default: 0 },
   },
   { timestamps: true },
 );
