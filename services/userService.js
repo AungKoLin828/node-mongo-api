@@ -1,7 +1,7 @@
 const User = require("../models/User");
 const Role = require("../models/Role");
 const jwt = require("jsonwebtoken");
-const bcrypt = require("bcrypt");
+const passwordUtils = require("../utils/password"); // renamed for clarity
 
 /* ---------------- CREATE USER ---------------- */
 exports.createUser = async (data) => {
@@ -14,7 +14,7 @@ exports.createUser = async (data) => {
   const role = await Role.findOne({ name: roleName });
   if (!role) throw new Error("Role not found");
 
-  const hashedPassword = await bcrypt.hash(password, 10);
+  const hashedPassword = await passwordUtils.hashPassword(password);
 
   return await User.create({
     name,
@@ -36,13 +36,13 @@ exports.loginUser = async ({ phone, password }) => {
     throw new Error("Account locked. Try later");
   }
 
-  const match = await bcrypt.compare(password, user.password);
+  const match = await passwordUtils.comparePassword(password, user.password);
 
   if (!match) {
     user.loginAttempts += 1;
 
     if (user.loginAttempts >= 5) {
-      user.lockUntil = Date.now() + 15 * 60 * 1000;
+      user.lockUntil = Date.now() + 15 * 60 * 1000; // 15 min lock
     }
 
     await user.save();
@@ -53,7 +53,6 @@ exports.loginUser = async ({ phone, password }) => {
   user.loginAttempts = 0;
   user.lockUntil = null;
   user.lastLogin = new Date();
-
   await user.save();
 
   const token = jwt.sign(
@@ -82,7 +81,7 @@ exports.updateUser = async (id, data) => {
   const { password, roleName } = data;
 
   if (password) {
-    data.password = await bcrypt.hash(password, 10);
+    data.password = await passwordUtils.hashPassword(password);
   }
 
   if (roleName) {
@@ -91,9 +90,7 @@ exports.updateUser = async (id, data) => {
     data.role = role._id;
   }
 
-  return await User.findByIdAndUpdate(id, data, {
-    new: true,
-  }).populate("role");
+  return await User.findByIdAndUpdate(id, data, { new: true }).populate("role");
 };
 
 /* ---------------- DELETE ---------------- */
@@ -105,9 +102,7 @@ exports.deleteUser = async (id) => {
 
 /* ---------------- GAME: SCORE ---------------- */
 exports.updateScore = async (userId, score) => {
-  if (score < 0 || score > 10000) {
-    throw new Error("Invalid score");
-  }
+  if (score < 0 || score > 10000) throw new Error("Invalid score");
 
   const user = await User.findById(userId);
 
