@@ -58,4 +58,11 @@ router.get(
 
 router.get("/admin/dashboard", authMiddleware(["ADMIN"]), getDashboard);
 
+router.post(
+  "/ads/reward",
+  authMiddleware(),
+  adLimiter,
+  userController.verifyAndRewardAd,
+);
+
 module.exports = router;

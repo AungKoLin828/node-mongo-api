@@ -256,3 +256,73 @@ exports.getDashboardStats = async (cpm = 0.5, cpc = 0.05) => {
     revenue: parseFloat(revenue.toFixed(2)),
   };
 };
+
+exports.verifyAndRewardAd = async (userId, data, req) => {
+  const { type, adNetwork, rewardAmount, adUnitId } = data;
+
+  const user = await User.findById(userId);
+  if (!user) throw new Error("User not found");
+
+  // 🚨 1. Basic validation
+  if (!type || !adNetwork) {
+    throw new Error("Invalid ad payload");
+  }
+
+  // 🚨 2. Anti-spam (cooldown)
+  const now = Date.now();
+  if (user.lastAdReward && now - user.lastAdReward < 20000) {
+    throw new Error("Too many rewards");
+  }
+
+  // 🚨 3. Device/IP validation
+  const ip = req.ip;
+  const deviceId = req.headers["device-id"] || "unknown";
+
+  const recentEvents = await AdEvent.countDocuments({
+    ip,
+    createdAt: { $gte: new Date(Date.now() - 60 * 1000) },
+  });
+
+  if (recentEvents > 20) {
+    throw new Error("Suspicious activity detected");
+  }
+
+  // 🚨 4. (Optional) AdMob verification placeholder
+  // NOTE: AdMob doesn't give direct API verification like this
+  // But you can validate adUnitId or signature if available
+  if (!adUnitId.includes("ca-app-pub")) {
+    throw new Error("Invalid ad unit");
+  }
+
+  // 💰 5. Reward logic
+  let coinsReward = 0;
+  let revenue = 0;
+
+  if (type === "REWARDED") {
+    coinsReward = rewardAmount || 1;
+    revenue = 0.01; // estimated per rewarded ad
+  }
+
+  // 🧾 6. Save event
+  await AdEvent.create({
+    user: userId,
+    type: "VIEW",
+    ip,
+    deviceId,
+    adProvider: adNetwork,
+    revenue,
+  });
+
+  // 🧮 7. Update user
+  user.coins += coinsReward;
+  user.adViews += 1;
+  user.lastAdReward = now;
+
+  await user.save();
+
+  return {
+    coins: user.coins,
+    adViews: user.adViews,
+    earned: revenue,
+  };
+};

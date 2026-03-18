@@ -160,3 +160,17 @@ exports.getDashboard = async (req, res) => {
     return response.error(res, err.message, 500);
   }
 };
+
+exports.verifyAndRewardAd = async (req, res) => {
+  try {
+    const result = await userService.verifyAndRewardAd(
+      req.user.userId,
+      req.body,
+      req,
+    );
+
+    return response.success(res, result, "Ad verified & reward given");
+  } catch (err) {
+    return response.error(res, err.message);
+  }
+};
