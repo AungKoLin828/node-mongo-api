@@ -191,3 +191,33 @@ exports.calculateGlobalRevenue = async (cpm = 0.5) => {
 
   return parseFloat(revenue.toFixed(2));
 };
+
+/* ---------------- ADMIN DASHBOARD ---------------- */
+exports.getDashboardStats = async (cpm = 0.5, cpc = 0.05) => {
+  const result = await User.aggregate([
+    {
+      $group: {
+        _id: null,
+        totalUsers: { $sum: 1 },
+        totalViews: { $sum: "$adViews" },
+        totalClicks: { $sum: "$adClicks" },
+        totalCoins: { $sum: "$coins" },
+      },
+    },
+  ]);
+
+  const stats = result[0] || {
+    totalUsers: 0,
+    totalViews: 0,
+    totalClicks: 0,
+    totalCoins: 0,
+  };
+
+  // 💰 Revenue calculation
+  const revenue = (stats.totalViews / 1000) * cpm + stats.totalClicks * cpc;
+
+  return {
+    ...stats,
+    revenue: parseFloat(revenue.toFixed(2)),
+  };
+};

@@ -16,6 +16,7 @@ const {
   getGlobalAdStats,
   getUserAdRevenue,
   getGlobalAdRevenue,
+  getDashboard,
 } = require("../controllers/userController");
 
 const { authMiddleware } = require("../middleware/authMiddleware");
@@ -45,10 +46,13 @@ router.get("/ads/global", authMiddleware(["ADMIN"]), getGlobalAdStats); // globa
 
 // Monetization / Revenue endpoints
 router.get("/ads/revenue", authMiddleware(), getUserAdRevenue); // user's estimated revenue
+
 router.get(
   "/ads/revenue/global",
   authMiddleware(["ADMIN"]),
   getGlobalAdRevenue,
 ); // total revenue (admin)
+
+router.get("/admin/dashboard", authMiddleware(["ADMIN"]), getDashboard);
 
 module.exports = router;
