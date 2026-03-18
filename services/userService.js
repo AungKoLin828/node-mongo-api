@@ -2,6 +2,7 @@ const User = require("../models/User");
 const Role = require("../models/Role");
 const jwt = require("jsonwebtoken");
 const passwordUtils = require("../utils/password"); // renamed for clarity
+const AdEvent = require("../models/AdEvent");
 
 /* ---------------- CREATE USER ---------------- */
 exports.createUser = async (data) => {
@@ -128,27 +129,61 @@ exports.getLeaderboard = async () => {
 };
 
 /* ---------------- TRACK AD VIEW & REWARD ---------------- */
-exports.trackAdView = async (userId) => {
+exports.trackAdView = async (userId, req) => {
   const user = await User.findById(userId);
   if (!user) throw new Error("User not found");
 
+  // 🚨 Anti-cheat cooldown (30 sec)
+  if (user.lastAdView && Date.now() - user.lastAdView < 30000) {
+    throw new Error("Too frequent ad views");
+  }
+
+  // Log event
+  await AdEvent.create({
+    user: userId,
+    type: "VIEW",
+    ip: req.ip,
+    deviceId: req.headers["device-id"] || "unknown",
+  });
+
   user.adViews += 1;
-  user.coins += 1; // Reward 1 coin per view
+  user.coins += 1; // game reward only
+  user.lastAdView = Date.now();
 
   await user.save();
-  return { adViews: user.adViews, coins: user.coins };
+
+  return {
+    adViews: user.adViews,
+    coins: user.coins,
+  };
 };
 
 /* ---------------- TRACK AD CLICK & REWARD ---------------- */
-exports.trackAdClick = async (userId) => {
+exports.trackAdClick = async (userId, req) => {
   const user = await User.findById(userId);
   if (!user) throw new Error("User not found");
 
+  if (user.lastAdClick && Date.now() - user.lastAdClick < 15000) {
+    throw new Error("Too frequent clicks");
+  }
+
+  await AdEvent.create({
+    user: userId,
+    type: "CLICK",
+    ip: req.ip,
+    deviceId: req.headers["device-id"] || "unknown",
+  });
+
   user.adClicks += 1;
-  user.coins += 5; // Reward 5 coins per click
+  user.coins += 5;
+  user.lastAdClick = Date.now();
 
   await user.save();
-  return { adClicks: user.adClicks, coins: user.coins };
+
+  return {
+    adClicks: user.adClicks,
+    coins: user.coins,
+  };
 };
 
 /* ---------------- GET USER AD STATS ---------------- */
@@ -201,7 +236,6 @@ exports.getDashboardStats = async (cpm = 0.5, cpc = 0.05) => {
         totalUsers: { $sum: 1 },
         totalViews: { $sum: "$adViews" },
         totalClicks: { $sum: "$adClicks" },
-        totalCoins: { $sum: "$coins" },
       },
     },
   ]);
@@ -210,14 +244,15 @@ exports.getDashboardStats = async (cpm = 0.5, cpc = 0.05) => {
     totalUsers: 0,
     totalViews: 0,
     totalClicks: 0,
-    totalCoins: 0,
   };
 
-  // 💰 Revenue calculation
+  const ctr = stats.totalViews > 0 ? stats.totalClicks / stats.totalViews : 0;
+
   const revenue = (stats.totalViews / 1000) * cpm + stats.totalClicks * cpc;
 
   return {
     ...stats,
+    ctr: parseFloat(ctr.toFixed(4)),
     revenue: parseFloat(revenue.toFixed(2)),
   };
 };

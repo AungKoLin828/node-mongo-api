@@ -86,8 +86,8 @@ exports.getLeaderboard = async (req, res) => {
 // Track ad view + reward coins
 exports.trackAdView = async (req, res) => {
   try {
-    const result = await userService.trackAdView(req.user.userId);
-    return response.success(res, result, "Ad view recorded and coins rewarded");
+    const result = await userService.trackAdView(req.user.userId, req);
+    return response.success(res, result, "Ad view recorded");
   } catch (err) {
     return response.error(res, err.message);
   }
@@ -96,12 +96,8 @@ exports.trackAdView = async (req, res) => {
 // Track ad click + reward coins
 exports.trackAdClick = async (req, res) => {
   try {
-    const result = await userService.trackAdClick(req.user.userId);
-    return response.success(
-      res,
-      result,
-      "Ad click recorded and coins rewarded",
-    );
+    const result = await userService.trackAdClick(req.user.userId, req);
+    return response.success(res, result, "Ad click recorded");
   } catch (err) {
     return response.error(res, err.message);
   }
@@ -118,13 +114,19 @@ exports.getUserAdStats = async (req, res) => {
 };
 
 // Get global ad stats + total coins
-exports.getGlobalAdStats = async (req, res) => {
-  try {
-    const stats = await userService.getGlobalAdStats();
-    return response.success(res, stats, "Global ad stats fetched");
-  } catch (err) {
-    return response.error(res, err.message, 500);
-  }
+exports.getGlobalAdStats = async () => {
+  const result = await User.aggregate([
+    {
+      $group: {
+        _id: null,
+        totalViews: { $sum: "$adViews" },
+        totalClicks: { $sum: "$adClicks" },
+        totalCoins: { $sum: "$coins" },
+      },
+    },
+  ]);
+
+  return result[0] || { totalViews: 0, totalClicks: 0, totalCoins: 0 };
 };
 
 /* ---------------- REVENUE ---------------- */

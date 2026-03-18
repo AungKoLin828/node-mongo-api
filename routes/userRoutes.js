@@ -20,6 +20,7 @@ const {
 } = require("../controllers/userController");
 
 const { authMiddleware } = require("../middleware/authMiddleware");
+const { adLimiter } = require("../middleware/adLimiter");
 
 /* ---------------- PUBLIC ---------------- */
 router.post("/login", loginUser);
@@ -39,10 +40,12 @@ router.post("/score", authMiddleware(), updateScore);
 router.get("/leaderboard", authMiddleware(), getLeaderboard);
 
 // Ad tracking & rewards
-router.post("/ads/view", authMiddleware(), trackAdView); // record ad view + reward coins
-router.post("/ads/click", authMiddleware(), trackAdClick); // record ad click + reward coins
 router.get("/ads/stats", authMiddleware(), getUserAdStats); // get user's ad stats + coins
 router.get("/ads/global", authMiddleware(["ADMIN"]), getGlobalAdStats); // global stats for admin
+
+// Apply limiter to ad routes
+router.post("/ads/view", authMiddleware(), adLimiter, trackAdView);
+router.post("/ads/click", authMiddleware(), adLimiter, trackAdClick);
 
 // Monetization / Revenue endpoints
 router.get("/ads/revenue", authMiddleware(), getUserAdRevenue); // user's estimated revenue
