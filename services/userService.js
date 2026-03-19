@@ -1,8 +1,16 @@
 const User = require("../models/User");
 const Role = require("../models/Role");
 const jwt = require("jsonwebtoken");
-const passwordUtils = require("../utils/password"); // renamed for clarity
+const crypto = require("crypto");
+const passwordUtils = require("../utils/password");
 const AdEvent = require("../models/AdEvent");
+
+/* ---------------- HELPERS ---------------- */
+
+const getDeviceHash = (req) => {
+  const raw = `${req.ip}-${req.headers["user-agent"]}-${req.headers["device-id"]}`;
+  return crypto.createHash("sha256").update(raw).digest("hex");
+};
 
 /* ---------------- CREATE USER ---------------- */
 exports.createUser = async (data) => {
@@ -29,10 +37,9 @@ exports.createUser = async (data) => {
 
 /* ---------------- LOGIN ---------------- */
 exports.loginUser = async ({ phone, password }) => {
-  const user = await User.findOne({ phone });
+  const user = await User.findOne({ phone }).populate("role");
   if (!user) throw new Error("User not found");
 
-  // 🔐 Account lock check
   if (user.lockUntil && user.lockUntil > Date.now()) {
     throw new Error("Account locked. Try later");
   }
@@ -43,21 +50,23 @@ exports.loginUser = async ({ phone, password }) => {
     user.loginAttempts += 1;
 
     if (user.loginAttempts >= 5) {
-      user.lockUntil = Date.now() + 15 * 60 * 1000; // 15 min lock
+      user.lockUntil = Date.now() + 15 * 60 * 1000;
     }
 
     await user.save();
     throw new Error("Invalid password");
   }
 
-  // reset security
   user.loginAttempts = 0;
   user.lockUntil = null;
   user.lastLogin = new Date();
   await user.save();
 
   const token = jwt.sign(
-    { userId: user._id, role: user.role },
+    {
+      userId: user._id,
+      role: user.role?.name,
+    },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN },
   );
@@ -65,58 +74,30 @@ exports.loginUser = async ({ phone, password }) => {
   return { user, token };
 };
 
-/* ---------------- GET USERS ---------------- */
-exports.getUsers = async () => {
-  return await User.find().populate("role");
-};
-
-/* ---------------- GET USER ---------------- */
-exports.getUserById = async (id) => {
-  const user = await User.findById(id).populate("role");
-  if (!user) throw new Error("User not found");
-  return user;
-};
-
-/* ---------------- UPDATE USER ---------------- */
-exports.updateUser = async (id, data) => {
-  const { password, roleName } = data;
-
-  if (password) {
-    data.password = await passwordUtils.hashPassword(password);
-  }
-
-  if (roleName) {
-    const role = await Role.findOne({ name: roleName });
-    if (!role) throw new Error("Role not found");
-    data.role = role._id;
-  }
-
-  return await User.findByIdAndUpdate(id, data, { new: true }).populate("role");
-};
-
-/* ---------------- DELETE ---------------- */
-exports.deleteUser = async (id) => {
-  const user = await User.findByIdAndDelete(id);
-  if (!user) throw new Error("User not found");
-  return true;
-};
-
-/* ---------------- GAME: SCORE ---------------- */
+/* ---------------- SCORE (ATOMIC SAFE) ---------------- */
 exports.updateScore = async (userId, score) => {
   if (score < 0 || score > 10000) throw new Error("Invalid score");
 
-  const user = await User.findById(userId);
+  const user = await User.findByIdAndUpdate(
+    userId,
+    {
+      $inc: {
+        score,
+        experience: score,
+        gamesPlayed: 1,
+      },
+    },
+    { new: true },
+  );
 
-  user.score += score;
-  user.experience += score;
-  user.gamesPlayed += 1;
+  if (!user) throw new Error("User not found");
 
   if (user.experience >= 100) {
     user.level += 1;
     user.experience = 0;
+    await user.save();
   }
 
-  await user.save();
   return user;
 };
 
@@ -125,41 +106,41 @@ exports.getLeaderboard = async () => {
   return await User.find()
     .sort({ score: -1 })
     .limit(10)
-    .select("name username score level coins");
+    .select("name username score level coins")
+    .lean();
 };
 
-/* ---------------- TRACK AD VIEW & REWARD ---------------- */
+/* ---------------- TRACK AD VIEW ---------------- */
 exports.trackAdView = async (userId, req) => {
+  const deviceHash = getDeviceHash(req);
+
   const user = await User.findById(userId);
   if (!user) throw new Error("User not found");
 
-  // 🚨 Anti-cheat cooldown (30 sec)
   if (user.lastAdView && Date.now() - user.lastAdView < 30000) {
     throw new Error("Too frequent ad views");
   }
 
-  // Log event
   await AdEvent.create({
     user: userId,
     type: "VIEW",
     ip: req.ip,
-    deviceId: req.headers["device-id"] || "unknown",
+    deviceId: deviceHash,
+    userAgent: req.headers["user-agent"],
   });
 
-  user.adViews += 1;
-  user.coins += 1; // game reward only
-  user.lastAdView = Date.now();
+  await User.findByIdAndUpdate(userId, {
+    $inc: { adViews: 1, coins: 1 },
+    $set: { lastAdView: Date.now() },
+  });
 
-  await user.save();
-
-  return {
-    adViews: user.adViews,
-    coins: user.coins,
-  };
+  return { success: true };
 };
 
-/* ---------------- TRACK AD CLICK & REWARD ---------------- */
+/* ---------------- TRACK AD CLICK ---------------- */
 exports.trackAdClick = async (userId, req) => {
+  const deviceHash = getDeviceHash(req);
+
   const user = await User.findById(userId);
   if (!user) throw new Error("User not found");
 
@@ -171,150 +152,138 @@ exports.trackAdClick = async (userId, req) => {
     user: userId,
     type: "CLICK",
     ip: req.ip,
-    deviceId: req.headers["device-id"] || "unknown",
+    deviceId: deviceHash,
+    userAgent: req.headers["user-agent"],
   });
 
-  user.adClicks += 1;
-  user.coins += 5;
-  user.lastAdClick = Date.now();
+  await User.findByIdAndUpdate(userId, {
+    $inc: { adClicks: 1, coins: 5 },
+    $set: { lastAdClick: Date.now() },
+  });
 
-  await user.save();
-
-  return {
-    adClicks: user.adClicks,
-    coins: user.coins,
-  };
+  return { success: true };
 };
 
-/* ---------------- GET USER AD STATS ---------------- */
-exports.getUserAdStats = async (userId) => {
-  const user = await User.findById(userId);
-  if (!user) throw new Error("User not found");
-
-  return {
-    adViews: user.adViews,
-    adClicks: user.adClicks,
-    coins: user.coins,
-  };
-};
-
-/* ---------------- GET GLOBAL AD STATS ---------------- */
+/* ---------------- GLOBAL STATS (AGGREGATION) ---------------- */
 exports.getGlobalAdStats = async () => {
-  const users = await User.find();
-  const totalViews = users.reduce((sum, u) => sum + u.adViews, 0);
-  const totalClicks = users.reduce((sum, u) => sum + u.adClicks, 0);
-  const totalCoins = users.reduce((sum, u) => sum + u.coins, 0);
+  const [stats] = await User.aggregate([
+    {
+      $group: {
+        _id: null,
+        totalViews: { $sum: "$adViews" },
+        totalClicks: { $sum: "$adClicks" },
+        totalCoins: { $sum: "$coins" },
+      },
+    },
+  ]);
 
-  return { totalViews, totalClicks, totalCoins };
+  return stats || { totalViews: 0, totalClicks: 0, totalCoins: 0 };
 };
 
-/* ---------------- CALCULATE USER AD REVENUE ---------------- */
-exports.calculateAdRevenue = async (userId, cpm = 0.5) => {
-  // cpm = cost per 1000 views in $ (default 0.5$)
-  const user = await User.findById(userId);
-  if (!user) throw new Error("User not found");
-
-  const revenue = (user.adViews / 1000) * cpm;
-  return parseFloat(revenue.toFixed(2));
-};
-
-/* ---------------- CALCULATE GLOBAL REVENUE ---------------- */
+/* ---------------- GLOBAL REVENUE (FIXED ⚡) ---------------- */
 exports.calculateGlobalRevenue = async (cpm = 0.5) => {
-  const users = await User.find();
-  const totalViews = users.reduce((sum, u) => sum + u.adViews, 0);
-  const revenue = (totalViews / 1000) * cpm;
+  const [stats] = await User.aggregate([
+    {
+      $group: {
+        _id: null,
+        totalViews: { $sum: "$adViews" },
+      },
+    },
+  ]);
 
-  return parseFloat(revenue.toFixed(2));
+  const totalViews = stats?.totalViews || 0;
+  return parseFloat(((totalViews / 1000) * cpm).toFixed(2));
 };
 
-/* ---------------- ADMIN DASHBOARD ---------------- */
+/* ---------------- DASHBOARD ---------------- */
 exports.getDashboardStats = async (cpm = 0.5, cpc = 0.05) => {
-  const result = await User.aggregate([
+  const [stats] = await User.aggregate([
     {
       $group: {
         _id: null,
         totalUsers: { $sum: 1 },
         totalViews: { $sum: "$adViews" },
         totalClicks: { $sum: "$adClicks" },
+        totalCoins: { $sum: "$coins" },
       },
     },
   ]);
 
-  const stats = result[0] || {
+  const safe = stats || {
     totalUsers: 0,
     totalViews: 0,
     totalClicks: 0,
+    totalCoins: 0,
   };
 
-  const ctr = stats.totalViews > 0 ? stats.totalClicks / stats.totalViews : 0;
+  const ctr = safe.totalViews > 0 ? safe.totalClicks / safe.totalViews : 0;
 
-  const revenue = (stats.totalViews / 1000) * cpm + stats.totalClicks * cpc;
+  const revenue = (safe.totalViews / 1000) * cpm + safe.totalClicks * cpc;
 
   return {
-    ...stats,
-    ctr: parseFloat(ctr.toFixed(4)),
-    revenue: parseFloat(revenue.toFixed(2)),
+    ...safe,
+    ctr: Number(ctr.toFixed(4)),
+    revenue: Number(revenue.toFixed(2)),
   };
 };
 
+/* ---------------- VERIFY & REWARD (HARDENED) ---------------- */
 exports.verifyAndRewardAd = async (userId, data, req) => {
-  const { type, adNetwork, rewardAmount, adUnitId } = data;
+  const { type, adNetwork, rewardAmount, adUnitId, txId } = data;
 
   const user = await User.findById(userId);
   if (!user) throw new Error("User not found");
 
-  // 🚨 1. Basic validation
-  if (!type || !adNetwork) {
-    throw new Error("Invalid ad payload");
+  const now = Date.now();
+  const deviceHash = getDeviceHash(req);
+
+  // ✅ idempotency check
+  if (txId) {
+    const exists = await AdEvent.findOne({ transactionId: txId });
+    if (exists) throw new Error("Duplicate reward");
   }
 
-  // 🚨 2. Anti-spam (cooldown)
-  const now = Date.now();
+  // ✅ reset daily
+  if (
+    new Date(user.lastDailyReset).toDateString() !== new Date().toDateString()
+  ) {
+    user.dailyCoins = 0;
+    user.lastDailyReset = now;
+  }
+
+  if (user.dailyCoins >= 1000) {
+    throw new Error("Daily reward limit reached");
+  }
+
   if (user.lastAdReward && now - user.lastAdReward < 20000) {
     throw new Error("Too many rewards");
   }
 
-  // 🚨 3. Device/IP validation
-  const ip = req.ip;
-  const deviceId = req.headers["device-id"] || "unknown";
+  let coinsReward = rewardAmount || 1;
+  let revenue = 0.01;
 
-  const recentEvents = await AdEvent.countDocuments({
-    ip,
-    createdAt: { $gte: new Date(Date.now() - 60 * 1000) },
-  });
-
-  if (recentEvents > 20) {
-    throw new Error("Suspicious activity detected");
+  if (user.dailyCoins + coinsReward > 1000) {
+    coinsReward = 1000 - user.dailyCoins;
   }
 
-  // 🚨 4. (Optional) AdMob verification placeholder
-  // NOTE: AdMob doesn't give direct API verification like this
-  // But you can validate adUnitId or signature if available
-  if (!adUnitId.includes("ca-app-pub")) {
-    throw new Error("Invalid ad unit");
+  // ✅ fraud detection
+  if (user.adViews > 100 && user.adClicks / user.adViews > 0.8) {
+    user.isSuspicious = true;
+    user.fraudScore += 10;
   }
 
-  // 💰 5. Reward logic
-  let coinsReward = 0;
-  let revenue = 0;
-
-  if (type === "REWARDED") {
-    coinsReward = rewardAmount || 1;
-    revenue = 0.01; // estimated per rewarded ad
-  }
-
-  // 🧾 6. Save event
   await AdEvent.create({
     user: userId,
-    type: "VIEW",
-    ip,
-    deviceId,
+    type: "REWARDED",
+    deviceId: deviceHash,
     adProvider: adNetwork,
+    adUnitId,
     revenue,
+    transactionId: txId,
   });
 
-  // 🧮 7. Update user
   user.coins += coinsReward;
+  user.dailyCoins += coinsReward;
   user.adViews += 1;
   user.lastAdReward = now;
 
@@ -322,7 +291,7 @@ exports.verifyAndRewardAd = async (userId, data, req) => {
 
   return {
     coins: user.coins,
-    adViews: user.adViews,
+    dailyCoins: user.dailyCoins,
     earned: revenue,
   };
 };

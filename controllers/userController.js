@@ -1,5 +1,6 @@
 const userService = require("../services/userService");
 const response = require("../utils/response");
+const { z } = require("zod");
 
 /* ---------------- CREATE ---------------- */
 exports.createUser = async (req, res) => {
@@ -83,21 +84,21 @@ exports.getLeaderboard = async (req, res) => {
 
 /* ---------------- AD TRACKING ---------------- */
 
-// Track ad view + reward coins
+// Track ad view + reward (simplified response)
 exports.trackAdView = async (req, res) => {
   try {
-    const result = await userService.trackAdView(req.user.userId, req);
-    return response.success(res, result, "Ad view recorded");
+    await userService.trackAdView(req.user.userId, req);
+    return response.success(res, null, "Ad view recorded");
   } catch (err) {
     return response.error(res, err.message);
   }
 };
 
-// Track ad click + reward coins
+// Track ad click + reward (simplified response)
 exports.trackAdClick = async (req, res) => {
   try {
-    const result = await userService.trackAdClick(req.user.userId, req);
-    return response.success(res, result, "Ad click recorded");
+    await userService.trackAdClick(req.user.userId, req);
+    return response.success(res, null, "Ad click recorded");
   } catch (err) {
     return response.error(res, err.message);
   }
@@ -114,24 +115,18 @@ exports.getUserAdStats = async (req, res) => {
 };
 
 // Get global ad stats + total coins
-exports.getGlobalAdStats = async () => {
-  const result = await User.aggregate([
-    {
-      $group: {
-        _id: null,
-        totalViews: { $sum: "$adViews" },
-        totalClicks: { $sum: "$adClicks" },
-        totalCoins: { $sum: "$coins" },
-      },
-    },
-  ]);
-
-  return result[0] || { totalViews: 0, totalClicks: 0, totalCoins: 0 };
+exports.getGlobalAdStats = async (req, res) => {
+  try {
+    const stats = await userService.getGlobalAdStats();
+    return response.success(res, stats, "Global ad stats fetched");
+  } catch (err) {
+    return response.error(res, err.message);
+  }
 };
 
 /* ---------------- REVENUE ---------------- */
 
-// Calculate user's ad revenue
+// User ad revenue
 exports.getUserAdRevenue = async (req, res) => {
   try {
     const revenue = await userService.calculateAdRevenue(req.user.userId);
@@ -141,7 +136,7 @@ exports.getUserAdRevenue = async (req, res) => {
   }
 };
 
-// Calculate global ad revenue (Admin only)
+// Global ad revenue (admin)
 exports.getGlobalAdRevenue = async (req, res) => {
   try {
     const revenue = await userService.calculateGlobalRevenue();
@@ -161,16 +156,37 @@ exports.getDashboard = async (req, res) => {
   }
 };
 
+/* ---------------- VERIFY & REWARD AD ---------------- */
+
+// Validation schema for reward request
+const rewardSchema = z.object({
+  type: z.enum(["REWARDED"]),
+  adNetwork: z.string(),
+  rewardAmount: z.number().optional(),
+  adUnitId: z.string(),
+  txId: z.string(), // required for idempotency
+});
+
 exports.verifyAndRewardAd = async (req, res) => {
   try {
+    // validate input
+    const parsed = rewardSchema.parse(req.body);
+
     const result = await userService.verifyAndRewardAd(
       req.user.userId,
-      req.body,
+      parsed,
       req,
     );
 
     return response.success(res, result, "Ad verified & reward given");
   } catch (err) {
+    if (err instanceof z.ZodError) {
+      return response.error(
+        res,
+        err.errors.map((e) => e.message).join(", "),
+        400,
+      );
+    }
     return response.error(res, err.message);
   }
 };
