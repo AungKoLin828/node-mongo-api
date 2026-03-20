@@ -261,14 +261,18 @@ exports.calculateGlobalRevenue = async (cpm = 0.5) => {
 /* ---------------- DASHBOARD ---------------- */
 
 exports.getDashboard = async () => {
+  const now = new Date();
   const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const last7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  const totalUsers = await User.countDocuments();
-  const activeUsers = await User.countDocuments({
-    lastLogin: { $gte: last24h },
-  });
+  /* ---------------- USERS ---------------- */
+  const [totalUsers, activeUsers, newUsers] = await Promise.all([
+    User.countDocuments(),
+    User.countDocuments({ lastLogin: { $gte: last24h } }),
+    User.countDocuments({ createdAt: { $gte: last24h } }),
+  ]);
 
+  /* ---------------- EVENT METRICS ---------------- */
   const eventStats = await AdEvent.aggregate([
     {
       $group: {
@@ -286,20 +290,43 @@ exports.getDashboard = async () => {
     metrics.revenue += e.revenue;
   });
 
+  /* ---------------- FUNNEL ---------------- */
   const ctr = metrics.VIEW ? metrics.CLICK / metrics.VIEW : 0;
   const rewardRate = metrics.CLICK ? metrics.REWARDED / metrics.CLICK : 0;
 
-  const suspiciousUsers = await User.countDocuments({
-    isSuspicious: true,
-  });
+  /* ---------------- LAST 24H ---------------- */
+  const last24hStats = await AdEvent.aggregate([
+    { $match: { createdAt: { $gte: last24h } } },
+    {
+      $group: {
+        _id: "$type",
+        count: { $sum: 1 },
+      },
+    },
+  ]);
 
+  /* ---------------- FRAUD ---------------- */
+  const [suspiciousUsers, fraudEvents] = await Promise.all([
+    User.countDocuments({ isSuspicious: true }),
+    AdEvent.countDocuments({ isFraud: true }),
+  ]);
+
+  /* ---------------- TOP USERS ---------------- */
+  const topUsers = await User.find()
+    .sort({ score: -1 })
+    .limit(5)
+    .select("name score coins")
+    .lean();
+
+  /* ---------------- TIMESERIES ---------------- */
   const timeseries = await AdEvent.aggregate([
     { $match: { createdAt: { $gte: last7d } } },
     {
       $group: {
         _id: {
-          day: { $dayOfMonth: "$createdAt" },
-          month: { $month: "$createdAt" },
+          date: {
+            $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
+          },
         },
         views: {
           $sum: { $cond: [{ $eq: ["$type", "VIEW"] }, 1, 0] },
@@ -307,18 +334,29 @@ exports.getDashboard = async () => {
         clicks: {
           $sum: { $cond: [{ $eq: ["$type", "CLICK"] }, 1, 0] },
         },
+        rewards: {
+          $sum: { $cond: [{ $eq: ["$type", "REWARDED"] }, 1, 0] },
+        },
         revenue: { $sum: "$revenue" },
       },
     },
-    { $sort: { "_id.day": 1 } },
+    { $sort: { "_id.date": 1 } },
   ]);
 
+  /* ---------------- REVENUE CALCULATION ---------------- */
+  const CPM = 0.5;
+  const CPC = 0.05;
+
+  const estimatedRevenue = (metrics.VIEW / 1000) * CPM + metrics.CLICK * CPC;
+
+  /* ---------------- FINAL RESPONSE ---------------- */
   return {
     overview: {
       totalUsers,
       activeUsers,
-      revenue: Number(metrics.revenue.toFixed(2)),
+      newUsers,
     },
+
     ads: {
       views: metrics.VIEW,
       clicks: metrics.CLICK,
@@ -326,10 +364,21 @@ exports.getDashboard = async () => {
       ctr: Number(ctr.toFixed(4)),
       rewardRate: Number(rewardRate.toFixed(4)),
     },
+
+    revenue: {
+      estimated: Number(estimatedRevenue.toFixed(2)),
+      actual: Number(metrics.revenue.toFixed(2)),
+    },
+
     fraud: {
       suspiciousUsers,
+      fraudEvents,
     },
+
+    topUsers,
+
     charts: {
+      last24h: last24hStats,
       timeseries,
     },
   };
