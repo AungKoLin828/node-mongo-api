@@ -149,8 +149,8 @@ exports.getGlobalAdRevenue = async (req, res) => {
 /* ---------------- ADMIN DASHBOARD ---------------- */
 exports.getDashboard = async (req, res) => {
   try {
-    const stats = await userService.getDashboardStats();
-    return response.success(res, stats, "Dashboard stats fetched");
+    const data = await userService.getDashboard();
+    return response.success(res, data, "Dashboard fetched");
   } catch (err) {
     return response.error(res, err.message, 500);
   }

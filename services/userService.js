@@ -12,7 +12,9 @@ const getDeviceHash = (req) => {
   return crypto.createHash("sha256").update(raw).digest("hex");
 };
 
-/* ---------------- CREATE USER ---------------- */
+/* ---------------- USER MANAGEMENT ---------------- */
+
+// CREATE USER
 exports.createUser = async (data) => {
   const { name, email, phone, password, roleName, isActive } = data;
 
@@ -35,7 +37,42 @@ exports.createUser = async (data) => {
   });
 };
 
-/* ---------------- LOGIN ---------------- */
+// GET ALL USERS
+exports.getUsers = async () => {
+  return await User.find().select("-password").populate("role", "name").lean();
+};
+
+// GET USER BY ID
+exports.getUserById = async (id) => {
+  const user = await User.findById(id)
+    .select("-password")
+    .populate("role", "name");
+
+  if (!user) throw new Error("User not found");
+
+  return user;
+};
+
+// UPDATE USER
+exports.updateUser = async (id, data) => {
+  const user = await User.findByIdAndUpdate(id, data, {
+    new: true,
+  }).select("-password");
+
+  if (!user) throw new Error("User not found");
+
+  return user;
+};
+
+// DELETE USER
+exports.deleteUser = async (id) => {
+  const user = await User.findByIdAndDelete(id);
+  if (!user) throw new Error("User not found");
+};
+
+/* ---------------- AUTH ---------------- */
+
+// LOGIN
 exports.loginUser = async ({ phone, password }) => {
   const user = await User.findOne({ phone }).populate("role");
   if (!user) throw new Error("User not found");
@@ -74,7 +111,9 @@ exports.loginUser = async ({ phone, password }) => {
   return { user, token };
 };
 
-/* ---------------- SCORE (ATOMIC SAFE) ---------------- */
+/* ---------------- GAME ---------------- */
+
+// UPDATE SCORE
 exports.updateScore = async (userId, score) => {
   if (score < 0 || score > 10000) throw new Error("Invalid score");
 
@@ -101,7 +140,7 @@ exports.updateScore = async (userId, score) => {
   return user;
 };
 
-/* ---------------- LEADERBOARD ---------------- */
+// LEADERBOARD
 exports.getLeaderboard = async () => {
   return await User.find()
     .sort({ score: -1 })
@@ -110,7 +149,9 @@ exports.getLeaderboard = async () => {
     .lean();
 };
 
-/* ---------------- TRACK AD VIEW ---------------- */
+/* ---------------- AD TRACKING ---------------- */
+
+// VIEW
 exports.trackAdView = async (userId, req) => {
   const deviceHash = getDeviceHash(req);
 
@@ -137,7 +178,7 @@ exports.trackAdView = async (userId, req) => {
   return { success: true };
 };
 
-/* ---------------- TRACK AD CLICK ---------------- */
+// CLICK
 exports.trackAdClick = async (userId, req) => {
   const deviceHash = getDeviceHash(req);
 
@@ -164,7 +205,16 @@ exports.trackAdClick = async (userId, req) => {
   return { success: true };
 };
 
-/* ---------------- GLOBAL STATS (AGGREGATION) ---------------- */
+// USER AD STATS
+exports.getUserAdStats = async (userId) => {
+  const user = await User.findById(userId).select("adViews adClicks coins");
+
+  if (!user) throw new Error("User not found");
+
+  return user;
+};
+
+// GLOBAL STATS
 exports.getGlobalAdStats = async () => {
   const [stats] = await User.aggregate([
     {
@@ -180,7 +230,20 @@ exports.getGlobalAdStats = async () => {
   return stats || { totalViews: 0, totalClicks: 0, totalCoins: 0 };
 };
 
-/* ---------------- GLOBAL REVENUE (FIXED ⚡) ---------------- */
+/* ---------------- REVENUE ---------------- */
+
+// USER REVENUE
+exports.calculateAdRevenue = async (userId, cpm = 0.5, cpc = 0.05) => {
+  const user = await User.findById(userId);
+
+  if (!user) throw new Error("User not found");
+
+  const revenue = (user.adViews / 1000) * cpm + user.adClicks * cpc;
+
+  return Number(revenue.toFixed(2));
+};
+
+// GLOBAL REVENUE
 exports.calculateGlobalRevenue = async (cpm = 0.5) => {
   const [stats] = await User.aggregate([
     {
@@ -192,44 +255,90 @@ exports.calculateGlobalRevenue = async (cpm = 0.5) => {
   ]);
 
   const totalViews = stats?.totalViews || 0;
-  return parseFloat(((totalViews / 1000) * cpm).toFixed(2));
+  return Number(((totalViews / 1000) * cpm).toFixed(2));
 };
 
 /* ---------------- DASHBOARD ---------------- */
-exports.getDashboardStats = async (cpm = 0.5, cpc = 0.05) => {
-  const [stats] = await User.aggregate([
+
+exports.getDashboard = async () => {
+  const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const last7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+  const totalUsers = await User.countDocuments();
+  const activeUsers = await User.countDocuments({
+    lastLogin: { $gte: last24h },
+  });
+
+  const eventStats = await AdEvent.aggregate([
     {
       $group: {
-        _id: null,
-        totalUsers: { $sum: 1 },
-        totalViews: { $sum: "$adViews" },
-        totalClicks: { $sum: "$adClicks" },
-        totalCoins: { $sum: "$coins" },
+        _id: "$type",
+        count: { $sum: 1 },
+        revenue: { $sum: "$revenue" },
       },
     },
   ]);
 
-  const safe = stats || {
-    totalUsers: 0,
-    totalViews: 0,
-    totalClicks: 0,
-    totalCoins: 0,
-  };
+  const metrics = { VIEW: 0, CLICK: 0, REWARDED: 0, revenue: 0 };
 
-  const ctr = safe.totalViews > 0 ? safe.totalClicks / safe.totalViews : 0;
+  eventStats.forEach((e) => {
+    metrics[e._id] = e.count;
+    metrics.revenue += e.revenue;
+  });
 
-  const revenue = (safe.totalViews / 1000) * cpm + safe.totalClicks * cpc;
+  const ctr = metrics.VIEW ? metrics.CLICK / metrics.VIEW : 0;
+  const rewardRate = metrics.CLICK ? metrics.REWARDED / metrics.CLICK : 0;
+
+  const suspiciousUsers = await User.countDocuments({
+    isSuspicious: true,
+  });
+
+  const timeseries = await AdEvent.aggregate([
+    { $match: { createdAt: { $gte: last7d } } },
+    {
+      $group: {
+        _id: {
+          day: { $dayOfMonth: "$createdAt" },
+          month: { $month: "$createdAt" },
+        },
+        views: {
+          $sum: { $cond: [{ $eq: ["$type", "VIEW"] }, 1, 0] },
+        },
+        clicks: {
+          $sum: { $cond: [{ $eq: ["$type", "CLICK"] }, 1, 0] },
+        },
+        revenue: { $sum: "$revenue" },
+      },
+    },
+    { $sort: { "_id.day": 1 } },
+  ]);
 
   return {
-    ...safe,
-    ctr: Number(ctr.toFixed(4)),
-    revenue: Number(revenue.toFixed(2)),
+    overview: {
+      totalUsers,
+      activeUsers,
+      revenue: Number(metrics.revenue.toFixed(2)),
+    },
+    ads: {
+      views: metrics.VIEW,
+      clicks: metrics.CLICK,
+      rewards: metrics.REWARDED,
+      ctr: Number(ctr.toFixed(4)),
+      rewardRate: Number(rewardRate.toFixed(4)),
+    },
+    fraud: {
+      suspiciousUsers,
+    },
+    charts: {
+      timeseries,
+    },
   };
 };
 
-/* ---------------- VERIFY & REWARD (HARDENED) ---------------- */
+/* ---------------- VERIFY & REWARD ---------------- */
+
 exports.verifyAndRewardAd = async (userId, data, req) => {
-  const { type, adNetwork, rewardAmount, adUnitId, txId } = data;
+  const { adNetwork, rewardAmount, adUnitId, txId } = data;
 
   const user = await User.findById(userId);
   if (!user) throw new Error("User not found");
@@ -237,13 +346,11 @@ exports.verifyAndRewardAd = async (userId, data, req) => {
   const now = Date.now();
   const deviceHash = getDeviceHash(req);
 
-  // ✅ idempotency check
   if (txId) {
     const exists = await AdEvent.findOne({ transactionId: txId });
     if (exists) throw new Error("Duplicate reward");
   }
 
-  // ✅ reset daily
   if (
     new Date(user.lastDailyReset).toDateString() !== new Date().toDateString()
   ) {
@@ -266,7 +373,6 @@ exports.verifyAndRewardAd = async (userId, data, req) => {
     coinsReward = 1000 - user.dailyCoins;
   }
 
-  // ✅ fraud detection
   if (user.adViews > 100 && user.adClicks / user.adViews > 0.8) {
     user.isSuspicious = true;
     user.fraudScore += 10;
